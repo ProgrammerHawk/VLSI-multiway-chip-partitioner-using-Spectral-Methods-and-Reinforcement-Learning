@@ -1,5 +1,7 @@
 # VLSI-multiway-chip-partitioner-using-Spectral-Methods-and-Reinforcement-Learning
-_This is a k-way partitioner with constraints to be used in a multilevel partitioning clustered level (Initial Partitioning Phase). To make it deterministic, spectral partitioning along with other methods like FM, reinforcement learning etc are used._
+_This is a k-way partitioner with constraints to be used in a multilevel partitioning clustered level (Initial Partitioning Phase). To make it deterministic, spectral partitioning along with other methods like FM, reinforcement learning etc are used._  
+
+_Acknowledgements_: I would like to thank __Cadence Design Systems__ for providing me mentorship on this project along with some sample clustered hypergraphs and sample FPGA base board connected system configuration.  
 #  
 
 __1. Coarsening Phase__
