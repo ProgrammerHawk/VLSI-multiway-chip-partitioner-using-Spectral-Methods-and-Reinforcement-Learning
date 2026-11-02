@@ -997,7 +997,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
                     wt = lnk.getBW();
                 }
             }
-            if (wt == 0 && otherId != UINT_MAX) {
+            if (otherId != UINT_MAX) {
                 const FpgaPairLink& lnk = mFsdb->getLink(otherId);
                 if (lnk.isConn() && lnk.getBW() > 0) {
                     wt = std::max(wt, lnk.getBW());
@@ -1068,8 +1068,16 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
         assert(rowSum == 0);
     }
     
-    MatrixXf cellWtMtxPowMinusHalf = (1/sqrt(cellWtMtx.rows())) * cellWtMtx;
-    MatrixXf normSysLaplacianWtMtx = cellWtMtxPowMinusHalf * sysLaplacianMtx * cellWtMtxPowMinusHalf;
+    MatrixXf cellWtMtxPowMinusHalf = MatrixXf::Zero(mNumFpgas, mNumFpgas);
+    VectorXf cellInvSqrtDeg(mNumFpgas);
+    for (unsigned i = 0; i < mNumFpgas; i++) {
+        float deg = sysDegMtx(i, i);
+        float invSqrt = deg > 0.0f ? (1.0f / std::sqrt(deg)) : 0.0f;
+        cellWtMtxPowMinusHalf(i, i) = invSqrt;
+        cellInvSqrtDeg[i] = invSqrt;
+    }
+    MatrixXf normSysLaplacianWtMtx = cellInvSqrtDeg.asDiagonal() * sysLaplacianMtx * cellInvSqrtDeg.asDiagonal();
+    normSysLaplacianWtMtx = 0.5f * (normSysLaplacianWtMtx + normSysLaplacianWtMtx.transpose());
 
     VectorXf sysEigenVal(mNumFpgas);
     MatrixXf sysEigenVec(mNumFpgas, mNumFpgas);
@@ -1078,7 +1086,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     assert(sysSAES.info() == 0);
     sysEigenVal = sysSAES.eigenvalues();
     ////std::cout << "System Eigenvalues are: " << sysEigenVal << std::endl;
-    sysEigenVec = sysSAES.eigenvectors();
+    sysEigenVec = cellInvSqrtDeg.asDiagonal() * sysSAES.eigenvectors();
 
     mSysEigenVec.resize(mNumFpgas, mNumFpgas);
     mSysEigenVec = sysEigenVec;
@@ -1176,7 +1184,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
             //float prodMag = v1sqrt * v2sqrt;
             float prodMag = vf11.norm() * vf22.norm();
             float dotProd = vf11.dot(vf22);
-            float val = dotProd / (prodMag > 0 ? prodMag : dotProd);
+            float val = prodMag > 0.0f ? (dotProd / prodMag) : 0.0f;
             coSimFpgas(i,j) = val;
             if (i != j && val > maxVal) {
                 maxVal = val;
@@ -1206,21 +1214,28 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     MatrixXf rawInstWtMtx(mNumInsts, mNumInsts);
     rawInstWtMtx = MatrixXf::Zero(mNumInsts, mNumInsts);
 
+    // Accumulate all parallel nets between pairs of instances (u, v)
+    const NetVec& allNets = mNg->getNets();
+    for (const auto& nt : allNets) {
+        const SourceDestInstPair& sdp = nt.getNetSrcDest();
+        unsigned u = sdp.first;
+        unsigned v = sdp.second;
+        if (u != v && u < mNumInsts && v < mNumInsts) {
+            float w = static_cast<float>(nt.getWeight());
+            netlistConnMtx(u, v) += w;
+            netlistConnMtx(v, u) += w;
+        }
+    }
+
     unsigned sparsity = 0;
-    for (int i = 0; i < mNumInsts; i++) {
-        unsigned rowWt = 0;
-        for (int j = 0; j < mNumInsts; j++) {
-            unsigned nId = instMtx(i,j);
-            unsigned otherId = instMtx(j,i);
-            unsigned wt = 0;
-            if (nId != UINT_MAX) {
-                wt = (mNg->getConstNet(nId)).getWeight();
-            }
+    for (int i = 0; i < (int)mNumInsts; i++) {
+        float rowWt = 0.0f;
+        for (int j = 0; j < (int)mNumInsts; j++) {
+            float wt = netlistConnMtx(i, j);
             if (i == j)
-                assert(wt == 0);
-            if (wt == 0)
+                assert(wt == 0.0f);
+            if (wt == 0.0f)
                 sparsity++;
-            netlistConnMtx(i,j) = wt;
             rowWt += wt;
         }
         netlistDegMtx(i,i) = rowWt;
@@ -1262,8 +1277,13 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
 
 
     MatrixXf netlistLaplacianMtx = netlistDegMtx - netlistConnMtx;
-    MatrixXf instWtMtxPowMinusHalf = (1/sqrt(instWtMtx.rows())) * instWtMtx;
-    MatrixXf normLaplacianW = instWtMtxPowMinusHalf * netlistLaplacianMtx * instWtMtxPowMinusHalf;
+    VectorXf instInvSqrtDeg(mNumInsts);
+    for (int i = 0; i < (int)mNumInsts; i++) {
+        float deg = netlistDegMtx(i, i);
+        instInvSqrtDeg[i] = deg > 0.0f ? (1.0f / std::sqrt(deg)) : 0.0f;
+    }
+    MatrixXf normLaplacianW = instInvSqrtDeg.asDiagonal() * netlistLaplacianMtx * instInvSqrtDeg.asDiagonal();
+    normLaplacianW = 0.5f * (normLaplacianW + normLaplacianW.transpose());
     double sty =  ((double)sparsity/(double)(mNumInsts*mNumInsts))*100.0;
     std::cout << "Sparsity is: " << sty <<  " percent" << std::endl;
     
@@ -1273,17 +1293,20 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     nlEigenVal = nlSAES.eigenvalues();
     std::cout << "EV computation: " << nlSAES.info() << std::endl;
     assert(nlSAES.info() == 0); // Success
-    std::cout << "Netlist Eigenvalues are: " << nlEigenVal << std::endl;
+    //std::cout << "Netlist Eigenvalues are: " << nlEigenVal << std::endl;
 
-    nlEigenVec = nlSAES.eigenvectors();
+    // Transform eigenvectors of D^{-1/2} L D^{-1/2} back to generalized eigenvectors D^{-1/2} U
+    nlEigenVec = instInvSqrtDeg.asDiagonal() * nlSAES.eigenvectors();
+    mNlEigenVec = nlEigenVec;
     VectorXf XNV(nlEigenVec.rows()),
              YNV(nlEigenVec.rows());
 
-    int minInstEIdx = 0;
+    // Skip trivial (near-zero) eigenvalues from disconnected or isolated vertices
+    int minInstEIdx = 1;
     float zeroEigValVecMag = 1.0/(float)sqrt(mNumInsts);
     std::cout << "ZERO EIGVAL VEC MAG: " << zeroEigValVecMag << std::endl;
-    for (int k = 0; k < nlEigenVal.size(); k++) {
-        if (nlEigenVal[k] > 10e-4) {
+    for (int k = 1; k < nlEigenVal.size(); k++) {
+        if (nlEigenVal[k] > 1e-4f) {
             minInstEIdx = k;
             break;
         }
@@ -1294,7 +1317,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     assert(minInstEIdx < (nlEigenVal.size() - 1));
     XNV << nlEigenVec.col(minInstEIdx);
     YNV << nlEigenVec.col(minInstEIdx+1);
-    std::cout << "EigenVectors are: " << XNV << std::endl << std::endl << YNV << std::endl;
+    //std::cout << "EigenVectors are: " << XNV << std::endl << std::endl << YNV << std::endl;
     //std::cout << "Netlist Eigen Vectors" << std::endl;
     std::ofstream ofs("NEV.dat");
     for (int v1 = 0; v1 < XNV.size(); v1++) {
@@ -1339,7 +1362,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
         unsigned i1 = sdp.first;
         unsigned i2 = sdp.second;
         if ((cl1.find(i1) != cl1.end() && cl2.find(i2) != cl2.end()) ||
-                cl1.find(i2) != cl1.end() && cl2.find(i1) != cl2.end()) {
+                (cl1.find(i2) != cl1.end() && cl2.find(i1) != cl2.end())) {
             // cut edge
             cutWt += n.getWeight();
             nrCutEdges++;
@@ -1403,8 +1426,8 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
             v11.setZero();
             v22.setZero();
             for (int p = 0, q = minInstEIdx; q < maxInstEIdx; p++,q++) {
-                v11[p] = v1[q+1];
-                v22[p] = v2[q+1];
+                v11[p] = v1[q];
+                v22[p] = v2[q];
                 v1acc += (v11[p]*v11[p]);
                 v2acc += (v22[p]*v22[p]);
             }
@@ -1413,7 +1436,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
             float prodMag = v1sqrt * v2sqrt;
             //float prodMag = v11.norm() * v22.norm();
             float dotProd = v11.dot(v22);
-            float val = dotProd / (prodMag > 0 ? prodMag : dotProd);
+            float val = prodMag > 0.0f ? (dotProd / prodMag) : 0.0f;
             coSimInsts(i,j) = val;
             if (i != j && val > maxVal) {
                 maxVal = val;
@@ -1476,7 +1499,7 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
             float prodMag = v1sqrt * v2sqrt;
             //float prodMag = v11.norm() * v22.norm();
             float dotProd = v11.dot(v22);
-            float val = dotProd / (prodMag > 0 ? prodMag : dotProd);
+            float val = prodMag > 0.0f ? (dotProd / prodMag) : 0.0f;
             coSimInstFpgas(i,j) = val;
             if (i != j) {
                 if (val > maxVal) {
@@ -1521,10 +1544,10 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     // Find eigen gap for instances
     std::vector<float> eigValDiff;
     int minEigId = minInstEIdx;
-    int maxEigId = minEigId + mNumFpgas;
+    int maxEigId = std::min((int)nlEigenVal.size() - 1, minEigId + (int)mNumFpgas);
     assert(nlEigenVal.size() > (minEigId + mNumFpgas));
     for (int i = minEigId; i <= maxEigId; i++) {
-        ////std::cout << "EVI: " << nlEigenVal[i] << std::endl;
+        //std::cout << "EVI: " << nlEigenVal[i] << std::endl;
         eigValDiff.emplace_back( nlEigenVal[i]);
     }
     std::adjacent_difference(eigValDiff.begin(), eigValDiff.end(), eigValDiff.begin());
@@ -1532,8 +1555,8 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
 
     assert(eigValDiff.size() >= mNumFpgas);
     int maxDiffId = mNumFpgas > 12 ? mNumFpgas - 12 : 0;
-    for (int j = eigValDiff.size() - 1; j >= maxDiffId; j--) {
-        ////std::cout << "EVID: " << j << " -- " << eigValDiff[j] << std::endl;
+    for (int j = (int)eigValDiff.size() - 1; j >= maxDiffId && j >= 0; j--) {
+        //std::cout << "EVID: " << j << " -- " << eigValDiff[j] << std::endl;
         if (eigValDiff[j] > maxValIdx.first) {
             maxValIdx.first = eigValDiff[j];
             maxValIdx.second = j;
@@ -1545,51 +1568,56 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
     size_t totalInstWt = rawInstWtMtx.trace();
     size_t totalFpgaWt = rawCellWtMtx.trace();
     std::cout << "Total Inst wt: " << totalInstWt << " - total cell wt: " << totalFpgaWt << std::endl;
-    unsigned avFpgaWt = totalFpgaWt / mNumFpgas;
-    int lowerBoundIdx = std::ceil((double)totalInstWt / (double)avFpgaWt);
+
+    // Compute exact minimum number of FPGAs needed across LUT, BMEM, and DMEM capacities
+    size_t totLutReq = 0, totBMemReq = 0, totDMemReq = 0;
+    for (unsigned i = 0; i < mNumInsts; ++i) {
+        const NLInst& inst = mNg->getInst(i);
+        totLutReq += inst.getLutWeight();
+        totBMemReq += inst.getBMemWeight();
+        totDMemReq += inst.getDMemWeight();
+    }
+    unsigned fpgaLCap = std::max(1u, mFsdb->getCellLCap());
+    unsigned fpgaBCap = std::max(1u, mFsdb->getCellBCap());
+    unsigned fpgaDCap = std::max(1u, mFsdb->getCellDCap());
+    int minFpgasL = std::ceil((double)totLutReq / (double)fpgaLCap);
+    int minFpgasB = totBMemReq > 0 ? std::ceil((double)totBMemReq / (double)fpgaBCap) : 1;
+    int minFpgasD = totDMemReq > 0 ? std::ceil((double)totDMemReq / (double)fpgaDCap) : 1;
+    int lowerBoundIdx = std::max({2, minFpgasL, minFpgasB, minFpgasD});
+    if (lowerBoundIdx > (int)mNumFpgas) {
+        lowerBoundIdx = mNumFpgas;
+    }
     std::cout << "Minimum number of FPGAs required: " << lowerBoundIdx << std::endl;
-    assert(lowerBoundIdx > 0 && lowerBoundIdx <= mNumFpgas);
-    int idealIdx = maxValIdx.second > 2 ? maxValIdx.second : mNumFpgas;
+    assert(lowerBoundIdx > 0 && lowerBoundIdx <= (int)mNumFpgas);
+    int idealIdx = maxValIdx.second > 2 ? maxValIdx.second : lowerBoundIdx;
     assert(idealIdx > 1);
     if (idealIdx < lowerBoundIdx) {
         idealIdx = lowerBoundIdx;
     }
     unsigned mNumInstsFit = mNumInsts/idealIdx;
-    int avInstPerFpga = std::round((totalFpgaWt/mNumFpgas) / (totalInstWt/mNumInsts));
-    double clusterScore = mNumInstsFit > avInstPerFpga ? 1.0 : ((idealIdx*100)/mNumFpgas);
+    int avInstPerFpga = std::round((totalFpgaWt/mNumFpgas) / std::max<size_t>(1, totalInstWt/mNumInsts));
+    double clusterScore = mNumInstsFit > (unsigned)avInstPerFpga ? 1.0 : ((idealIdx*100)/mNumFpgas);
     std::cout << "CLUSTERING SCORE (using graph eigengap): " << clusterScore << std::endl;
 
-    // Now create initial size-constrained clusters from eigv rows using k-means
-    // TODO: A more sophisticated way is to do auto-tuning clustering with GIVENS rotation
-    
-    // Create matrix of mNumInsts x mNumFpgas eigenvectors
-    int nCols = nlEigenVec.cols();
-    for (int i = 1; i < nCols - 1; ++i) {
-	int k;
-        nlEigenVal.segment(i, nCols - i).maxCoeff(&k);
-        if (k > 0) {
-            std::swap(nlEigenVal[i], nlEigenVal[k + i]);
-            nlEigenVec.col(i).swap(nlEigenVec.col(k + i));
+    // Use minimum number of FPGAs (lowerBoundIdx) as the target number of clusters
+    // so we pack tightly without spreading across all FPGAs
+    int numClusters = lowerBoundIdx;
+    int numSpectralDims = std::min(numClusters, (int)nlEigenVec.cols() - minInstEIdx);
+    assert(numSpectralDims > 0);
+    MatrixXf reducedEV(mNumInsts, numSpectralDims);
+    for (int c = 0; c < numSpectralDims; ++c) {
+        float ev = std::max(nlEigenVal[minInstEIdx + c], 1e-4f);
+        float weight = 1.0f / std::sqrt(ev);
+        reducedEV.col(c) = nlEigenVec.col(minInstEIdx + c) * weight;
+    }
+    for (int r = 0; r < (int)mNumInsts; ++r) {
+        float rowNorm = reducedEV.row(r).norm();
+        if (rowNorm > 1e-12f) {
+            reducedEV.row(r) /= rowNorm;
         }
     }
 
-    // Number of eigen vectors to consider: mNumFpgas+1
-    // Number of clusters: idealIdx (should be less than mNumFpgas)
-    ////int numClusters = idealIdx < mNumFpgas ? idealIdx : mNumFpgas;
-    int numClusters = mNumFpgas;
-    ////std::cout << "Number of clusters requested are: " << numClusters << std::endl;
-    int numDims = nlEigenVec.cols();
-    MatrixXf reducedEV;
-    int numCols = numDims - minInstEIdx;
-    reducedEV = nlEigenVec.rightCols(numCols);
-
-    // K-Way
-    std::cout << "Num original Centroids are: " << fpga2Inst.size() << std::endl;
-    for (auto& el : fpga2Inst) {
-        std::cout << "CINST: " << el << std::endl;
-    }
-
-    assert(fpga2Inst.size() >= numClusters);
+    assert(fpga2Inst.size() >= (size_t)numClusters);
     mClusters = KMeans::kmcluster(reducedEV, fpga2Inst, numClusters);
     
     unsigned csz = mClusters.size();
@@ -1603,7 +1631,6 @@ void AnalyticalPartitioner::createSimMatricesAndClusters()
         }
         mClusterSets.emplace_back(clustSet);
     }
-
 }
 
 void AnalyticalPartitioner::collectFpgaBridges()
@@ -1753,6 +1780,600 @@ void AnalyticalPartitioner::removeInstFromPart(unsigned nId, unsigned pId)
     std::get<0>(nbWts) -= nbLwt;
     std::get<1>(nbWts) -= nbBwt;
     std::get<2>(nbWts) -= nbDwt;
+}
+
+void AnalyticalPartitioner::initialPlacement()
+{
+    unsigned numClusters = mClusters.size();
+    if (numClusters == 0 || mNumFpgas == 0)
+        return;
+
+    // 1. Build condensed instance adjacency list (merging parallel multi-edges)
+    std::vector<std::vector<std::pair<unsigned, double>>> condensedAdj(mNumInsts);
+    {
+        std::vector<double> accumW(mNumInsts, 0.0);
+        std::vector<unsigned> nbrList;
+        nbrList.reserve(256);
+        for (unsigned u = 0; u < mNumInsts; ++u) {
+            nbrList.clear();
+            const NetIdVec& incNets = mNg->getInst(u).getNetsIds();
+            for (unsigned nid : incNets) {
+                const Net& net = mNg->getConstNet(nid);
+                unsigned v = net.getNetOtherInst(u);
+                if (v == u || v >= mNumInsts) continue;
+                if (accumW[v] == 0.0) {
+                    nbrList.push_back(v);
+                }
+                accumW[v] += static_cast<double>(net.getWeight());
+            }
+            condensedAdj[u].reserve(nbrList.size());
+            for (unsigned v : nbrList) {
+                condensedAdj[u].emplace_back(v, accumW[v]);
+                accumW[v] = 0.0;
+            }
+        }
+    }
+
+    // 2. Build cluster-to-cluster connectivity matrix
+    std::vector<unsigned> instCluster(mNumInsts, 0);
+    for (unsigned c = 0; c < numClusters; ++c) {
+        for (int instId : mClusters[c]) {
+            if (instId >= 0 && (unsigned)instId < mNumInsts) {
+                instCluster[instId] = c;
+            }
+        }
+    }
+
+    MatrixXd clustConn = MatrixXd::Zero(numClusters, numClusters);
+    for (unsigned u = 0; u < mNumInsts; ++u) {
+        unsigned cu = instCluster[u];
+        for (const auto& edge : condensedAdj[u]) {
+            unsigned cv = instCluster[edge.first];
+            if (cu != cv) {
+                clustConn(cu, cv) += edge.second;
+            }
+        }
+    }
+
+    // 3. Build FPGA-to-FPGA penalty matrix (0 if same, 1.0 if connected, high penalty if unconnected)
+    MatrixXd fpgaCost = MatrixXd::Zero(mNumFpgas, mNumFpgas);
+    for (unsigned p1 = 0; p1 < mNumFpgas; ++p1) {
+        for (unsigned p2 = 0; p2 < mNumFpgas; ++p2) {
+            if (p1 == p2) {
+                fpgaCost(p1, p2) = 0.0;
+            } else if (mFsdb->isConnectedPair(p1, p2)) {
+                unsigned bw = mFsdb->getBandwidth(p1, p2);
+                fpgaCost(p1, p2) = 1.0 - (bw > 0 && bw != UINT_MAX ? std::min(0.2, (double)bw / 10000.0) : 0.0);
+            } else {
+                fpgaCost(p1, p2) = 50.0; // Heavy penalty for unconnected FPGA pairs
+            }
+        }
+    }
+
+    // 4. Select the best tightly-connected subset of active FPGAs of size numClusters,
+    //    and optimize Cluster-to-FPGA mapping via 2-opt QAP search over all mNumFpgas
+    std::vector<unsigned> clustToFpga(numClusters);
+    {
+        std::vector<bool> fpgaTaken(mNumFpgas, false);
+        // Find seed FPGA with highest total link bandwidth to other active FPGAs
+        unsigned bestSeed = 0;
+        double bestSeedBw = -1.0;
+        for (unsigned p = 0; p < mNumFpgas; ++p) {
+            if (mFsdb->getCell(p).isUnused()) continue;
+            double totBw = 0.0;
+            for (unsigned q = 0; q < mNumFpgas; ++q) {
+                if (p != q && mFsdb->isConnectedPair(p, q)) {
+                    totBw += static_cast<double>(mFsdb->getBandwidth(p, q));
+                }
+            }
+            if (totBw > bestSeedBw) {
+                bestSeedBw = totBw;
+                bestSeed = p;
+            }
+        }
+        clustToFpga[0] = bestSeed;
+        fpgaTaken[bestSeed] = true;
+
+        // Greedily grow the subset of numClusters FPGAs that has maximum internal connectivity
+        for (unsigned c = 1; c < numClusters; ++c) {
+            unsigned bestP = UINT_MAX;
+            double bestConnScore = std::numeric_limits<double>::lowest();
+            for (unsigned p = 0; p < mNumFpgas; ++p) {
+                if (fpgaTaken[p] || mFsdb->getCell(p).isUnused()) continue;
+                double score = 0.0;
+                for (unsigned prev = 0; prev < c; ++prev) {
+                    unsigned qp = clustToFpga[prev];
+                    if (mFsdb->isConnectedPair(p, qp)) {
+                        score += 100.0 + 0.01 * static_cast<double>(mFsdb->getBandwidth(p, qp));
+                    } else {
+                        score -= 50.0;
+                    }
+                }
+                if (score > bestConnScore) {
+                    bestConnScore = score;
+                    bestP = p;
+                }
+            }
+            if (bestP == UINT_MAX) {
+                for (unsigned p = 0; p < mNumFpgas; ++p) {
+                    if (!fpgaTaken[p]) { bestP = p; break; }
+                }
+            }
+            clustToFpga[c] = bestP;
+            fpgaTaken[bestP] = true;
+        }
+
+        // 2-opt QAP swap search among mapped clusters and unselected candidate FPGAs
+        bool improved = true;
+        int qapIter = 0;
+        while (improved && qapIter < 60) {
+            improved = false;
+            qapIter++;
+            // Swaps between two assigned clusters
+            for (unsigned c1 = 0; c1 < numClusters; ++c1) {
+                for (unsigned c2 = c1 + 1; c2 < numClusters; ++c2) {
+                    unsigned p1 = clustToFpga[c1];
+                    unsigned p2 = clustToFpga[c2];
+                    double delta = 0.0;
+                    for (unsigned k = 0; k < numClusters; ++k) {
+                        if (k == c1 || k == c2) continue;
+                        unsigned pk = clustToFpga[k];
+                        double w1k = clustConn(c1, k);
+                        double w2k = clustConn(c2, k);
+                        double oldCost = w1k * fpgaCost(p1, pk) + w2k * fpgaCost(p2, pk);
+                        double newCost = w1k * fpgaCost(p2, pk) + w2k * fpgaCost(p1, pk);
+                        delta += (newCost - oldCost);
+                    }
+                    if (delta < -1e-6) {
+                        std::swap(clustToFpga[c1], clustToFpga[c2]);
+                        improved = true;
+                    }
+                }
+            }
+            // Swaps between an assigned cluster c1 and an unassigned FPGA candP
+            for (unsigned c1 = 0; c1 < numClusters; ++c1) {
+                unsigned p1 = clustToFpga[c1];
+                for (unsigned candP = 0; candP < mNumFpgas; ++candP) {
+                    if (fpgaTaken[candP] || mFsdb->getCell(candP).isUnused()) continue;
+                    double delta = 0.0;
+                    for (unsigned k = 0; k < numClusters; ++k) {
+                        if (k == c1) continue;
+                        unsigned pk = clustToFpga[k];
+                        double w1k = clustConn(c1, k);
+                        delta += w1k * (fpgaCost(candP, pk) - fpgaCost(p1, pk));
+                    }
+                    if (delta < -1e-6) {
+                        fpgaTaken[p1] = false;
+                        fpgaTaken[candP] = true;
+                        clustToFpga[c1] = candP;
+                        p1 = candP;
+                        improved = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Track active FPGAs (start with only the numClusters selected FPGAs; activate another only if strictly needed for capacity)
+    std::vector<bool> activeFpgaMask(mNumFpgas, false);
+    for (unsigned c = 0; c < numClusters; ++c) {
+        activeFpgaMask[clustToFpga[c]] = true;
+    }
+
+    // 5. Capacity-aware initial assignment of instances from clusters to mapped FPGAs (using 100% usable capacity)
+    std::vector<unsigned> overflowInsts;
+    for (unsigned c = 0; c < numClusters; ++c) {
+        unsigned targetP = clustToFpga[c];
+        const std::vector<int>& clust = mClusters[c];
+        for (int idx : clust) {
+            unsigned instId = static_cast<unsigned>(idx);
+            if (!checkAndAddInstToPart(instId, targetP, 1.0f)) {
+                overflowInsts.push_back(instId);
+            }
+        }
+    }
+
+    // Sort overflow instances by total net weight descending so heavily connected instances get placed first
+    std::sort(overflowInsts.begin(), overflowInsts.end(), [&](unsigned a, unsigned b) {
+        return mNg->getInst(a).getTotalNetWt() > mNg->getInst(b).getTotalNetWt();
+    });
+
+    // Place any overflow instances into already-active FPGAs first; only open a new FPGA if no active FPGA can fit it
+    for (unsigned instId : overflowInsts) {
+        const NLInst& nli = mNg->getInst(instId);
+        const auto& adj = condensedAdj[instId];
+
+        auto findBestPart = [&](bool restrictToActive, float capThresh) -> unsigned {
+            unsigned bestP = UINT_MAX;
+            double bestScore = std::numeric_limits<double>::lowest();
+            for (unsigned p = 0; p < mNumFpgas; ++p) {
+                if (mFsdb->getCell(p).isUnused())
+                    continue;
+                if (restrictToActive && !activeFpgaMask[p])
+                    continue;
+                const CellData& pW = getPartWeights(p);
+                CellData cumCd = std::make_tuple(
+                    std::get<0>(pW) + nli.getLutWeight(),
+                    std::get<1>(pW) + nli.getBMemWeight(),
+                    std::get<2>(pW) + nli.getDMemWeight());
+                if (mFsdb->isCapViol(p, cumCd, capThresh))
+                    continue;
+
+                double score = 0.0;
+                for (const auto& edge : adj) {
+                    unsigned otherP = getInstPart(edge.first);
+                    if (otherP == UINT_MAX) continue;
+                    double w = edge.second;
+                    if (otherP == p) {
+                        score += 2.0 * w;
+                    } else if (mFsdb->isConnectedPair(p, otherP)) {
+                        score += 1.0 * w;
+                    } else {
+                        score -= 4.0 * w;
+                    }
+                }
+                // Bonus if p is connected to existing active FPGAs
+                if (!restrictToActive) {
+                    for (unsigned ap = 0; ap < mNumFpgas; ++ap) {
+                        if (activeFpgaMask[ap] && mFsdb->isConnectedPair(p, ap)) {
+                            score += 100.0;
+                        }
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestP = p;
+                }
+            }
+            return bestP;
+        };
+
+        unsigned chosenP = findBestPart(true, 1.0f);
+        if (chosenP == UINT_MAX) {
+            chosenP = findBestPart(false, 1.0f);
+            if (chosenP != UINT_MAX) {
+                activeFpgaMask[chosenP] = true;
+            }
+        }
+        if (chosenP == UINT_MAX) {
+            chosenP = findBestPart(false, 1.5f);
+            if (chosenP != UINT_MAX) {
+                activeFpgaMask[chosenP] = true;
+            }
+        }
+        if (chosenP == UINT_MAX) {
+            chosenP = clustToFpga[0];
+        }
+        const CellData& pW = getPartWeights(chosenP);
+        CellData cumCd = std::make_tuple(
+            std::get<0>(pW) + nli.getLutWeight(),
+            std::get<1>(pW) + nli.getBMemWeight(),
+            std::get<2>(pW) + nli.getDMemWeight());
+        updateInstAllocation(instId, chosenP);
+        addToPartWts(chosenP, cumCd);
+    }
+
+    // 6. Fast Multi-pass k-way Fiduccia-Mattheyses (FM) Boundary Refinement
+    //    Packs instances into the active FPGAs and minimizes total cut weight (cutWt + rtCutWt)
+    std::vector<unsigned> instOrder(mNumInsts);
+    for (unsigned i = 0; i < mNumInsts; ++i) {
+        instOrder[i] = i;
+    }
+    std::sort(instOrder.begin(), instOrder.end(), [&](unsigned a, unsigned b) {
+        return mNg->getInst(a).getTotalNetWt() > mNg->getInst(b).getTotalNetWt();
+    });
+
+    std::vector<double> partConnWts(mNumFpgas, 0.0);
+    std::vector<unsigned> touchedParts;
+    touchedParts.reserve(mNumFpgas);
+
+    constexpr int maxRefinementPasses = 35;
+    for (int pass = 0; pass < maxRefinementPasses; ++pass) {
+        unsigned movesMade = 0;
+        // Directly optimize total cut weight, with a tiny tie-breaker for connected links over route-throughs
+        double rtPenalty = 1.0001;
+
+        for (unsigned idx = 0; idx < mNumInsts; ++idx) {
+            unsigned u = instOrder[idx];
+            unsigned curP = getInstPart(u);
+            if (curP == UINT_MAX)
+                continue;
+
+            const auto& adj = condensedAdj[u];
+            if (adj.empty())
+                continue;
+
+            touchedParts.clear();
+            bool hasExternalNeighbor = false;
+            for (const auto& edge : adj) {
+                unsigned pv = getInstPart(edge.first);
+                if (pv == UINT_MAX)
+                    continue;
+                if (pv != curP)
+                    hasExternalNeighbor = true;
+                if (partConnWts[pv] == 0.0) {
+                    touchedParts.push_back(pv);
+                }
+                partConnWts[pv] += edge.second;
+            }
+
+            if (!hasExternalNeighbor) {
+                for (unsigned p : touchedParts) partConnWts[p] = 0.0;
+                continue;
+            }
+
+            auto evalPartitionCost = [&](unsigned targetP) -> double {
+                double cost = 0.0;
+                for (unsigned pv : touchedParts) {
+                    if (pv == targetP)
+                        continue;
+                    double w = partConnWts[pv];
+                    if (mFsdb->isConnectedPair(targetP, pv)) {
+                        cost += w;
+                    } else {
+                        cost += rtPenalty * w;
+                    }
+                }
+                return cost;
+            };
+
+            double curCost = evalPartitionCost(curP);
+            double bestCost = curCost;
+            unsigned bestP = curP;
+
+            for (unsigned candP : touchedParts) {
+                if (candP == curP)
+                    continue;
+                if (!canBeAddedToPart(u, candP))
+                    continue;
+                double candCost = evalPartitionCost(candP);
+                if (candCost < bestCost - 1e-6) {
+                    bestCost = candCost;
+                    bestP = candP;
+                }
+            }
+
+            for (unsigned p : touchedParts) {
+                partConnWts[p] = 0.0;
+            }
+
+            if (bestP != curP) {
+                checkAndAddInstToPart(u, bestP, 1.0f);
+                movesMade++;
+            }
+        }
+
+        // Pairwise swap pass across top external candidate partitions when partitions are at 100% capacity
+        if (pass < 20) {
+            std::vector<std::pair<double, unsigned>> candQs;
+            candQs.reserve(16);
+            for (unsigned idx = 0; idx < mNumInsts; ++idx) {
+                unsigned u = instOrder[idx];
+                unsigned pu = getInstPart(u);
+                if (pu == UINT_MAX) continue;
+                const NLInst& instU = mNg->getInst(u);
+                const auto& adjU = condensedAdj[u];
+
+                touchedParts.clear();
+                for (const auto& edge : adjU) {
+                    unsigned pv = getInstPart(edge.first);
+                    if (pv != UINT_MAX) {
+                        if (partConnWts[pv] == 0.0) touchedParts.push_back(pv);
+                        partConnWts[pv] += edge.second;
+                    }
+                }
+
+                candQs.clear();
+                for (unsigned q : touchedParts) {
+                    if (q != pu && !canBeAddedToPart(u, q) && partConnWts[q] > 0.0) {
+                        candQs.emplace_back(partConnWts[q], q);
+                    }
+                }
+                for (unsigned q : touchedParts) partConnWts[q] = 0.0;
+
+                if (candQs.empty())
+                    continue;
+
+                std::sort(candQs.begin(), candQs.end(), [](const std::pair<double, unsigned>& a, const std::pair<double, unsigned>& b) {
+                    return a.first > b.first;
+                });
+                size_t maxCandQ = std::min<size_t>(candQs.size(), 3);
+
+                unsigned bestV = UINT_MAX;
+                unsigned bestQ = UINT_MAX;
+                double bestSwapGain = 0.0;
+
+                const CellData& wtP = getPartWeights(pu);
+
+                for (size_t qi = 0; qi < maxCandQ; ++qi) {
+                    unsigned targetQ = candQs[qi].second;
+                    const std::unordered_set<unsigned>& qInsts = mFpgaInsts[targetQ];
+                    const CellData& wtQ = getPartWeights(targetQ);
+
+                    for (unsigned v : qInsts) {
+                        const NLInst& instV = mNg->getInst(v);
+
+                        if (std::get<0>(wtP) < instU.getLutWeight() ||
+                            std::get<1>(wtP) < instU.getBMemWeight() ||
+                            std::get<2>(wtP) < instU.getDMemWeight() ||
+                            std::get<0>(wtQ) < instV.getLutWeight() ||
+                            std::get<1>(wtQ) < instV.getBMemWeight() ||
+                            std::get<2>(wtQ) < instV.getDMemWeight()) {
+                            continue;
+                        }
+                        CellData newWtP = std::make_tuple(
+                            std::get<0>(wtP) - instU.getLutWeight() + instV.getLutWeight(),
+                            std::get<1>(wtP) - instU.getBMemWeight() + instV.getBMemWeight(),
+                            std::get<2>(wtP) - instU.getDMemWeight() + instV.getDMemWeight());
+                        CellData newWtQ = std::make_tuple(
+                            std::get<0>(wtQ) - instV.getLutWeight() + instU.getLutWeight(),
+                            std::get<1>(wtQ) - instV.getBMemWeight() + instU.getBMemWeight(),
+                            std::get<2>(wtQ) - instV.getDMemWeight() + instU.getDMemWeight());
+
+                        if (mFsdb->isCapViol(pu, newWtP, 1.0f) || mFsdb->isCapViol(targetQ, newWtQ, 1.0f))
+                            continue;
+
+                        double gain = 0.0;
+                        for (const auto& edge : adjU) {
+                            unsigned nbr = edge.first;
+                            if (nbr == v) continue;
+                            unsigned pnbr = getInstPart(nbr);
+                            double w = edge.second;
+                            double oldC = (pnbr == pu) ? 0.0 : (mFsdb->isConnectedPair(pu, pnbr) ? w : rtPenalty * w);
+                            double newC = (pnbr == targetQ) ? 0.0 : (mFsdb->isConnectedPair(targetQ, pnbr) ? w : rtPenalty * w);
+                            gain += (oldC - newC);
+                        }
+                        for (const auto& edge : condensedAdj[v]) {
+                            unsigned nbr = edge.first;
+                            if (nbr == u) continue;
+                            unsigned pnbr = getInstPart(nbr);
+                            double w = edge.second;
+                            double oldC = (pnbr == targetQ) ? 0.0 : (mFsdb->isConnectedPair(targetQ, pnbr) ? w : rtPenalty * w);
+                            double newC = (pnbr == pu) ? 0.0 : (mFsdb->isConnectedPair(pu, pnbr) ? w : rtPenalty * w);
+                            gain += (oldC - newC);
+                        }
+
+                        if (gain > bestSwapGain + 1e-6) {
+                            bestSwapGain = gain;
+                            bestV = v;
+                            bestQ = targetQ;
+                        }
+                    }
+                }
+
+                if (bestV != UINT_MAX && bestQ != UINT_MAX) {
+                    removeInstFromPart(u, pu);
+                    removeInstFromPart(bestV, bestQ);
+                    checkAndAddInstToPart(u, bestQ, 1.0f);
+                    checkAndAddInstToPart(bestV, pu, 1.0f);
+                    movesMade += 2;
+                }
+            }
+        }
+
+        if (movesMade == 0 && pass >= 12)
+            break;
+    }
+
+    // 7. Post-refinement Partition-to-FPGA QAP Remapping:
+    //    Re-map the populated partitions onto the optimal physical FPGAs based on final cut traffic
+    std::vector<unsigned> usedParts;
+    for (unsigned p = 0; p < mNumFpgas; ++p) {
+        if (mFpgaNumInsts[p] > 0) {
+            usedParts.push_back(p);
+        }
+    }
+    unsigned numUsed = usedParts.size();
+    if (numUsed > 1) {
+        std::vector<int> partToCompact(mNumFpgas, -1);
+        for (unsigned i = 0; i < numUsed; ++i) {
+            partToCompact[usedParts[i]] = i;
+        }
+        MatrixXd finalConn = MatrixXd::Zero(numUsed, numUsed);
+        for (unsigned u = 0; u < mNumInsts; ++u) {
+            unsigned pu = getInstPart(u);
+            if (pu == UINT_MAX) continue;
+            int ci = partToCompact[pu];
+            if (ci < 0) continue;
+            for (const auto& edge : condensedAdj[u]) {
+                unsigned pv = getInstPart(edge.first);
+                if (pv == UINT_MAX || pv == pu) continue;
+                int cj = partToCompact[pv];
+                if (cj >= 0) {
+                    finalConn(ci, cj) += edge.second;
+                }
+            }
+        }
+
+        // Penalty matrix for final remapping: connected = 0.0, unconnected = 1.0 (to minimize rtCutWt without changing total cut)
+        MatrixXd rtCostMtx = MatrixXd::Zero(mNumFpgas, mNumFpgas);
+        for (unsigned p1 = 0; p1 < mNumFpgas; ++p1) {
+            for (unsigned p2 = 0; p2 < mNumFpgas; ++p2) {
+                if (p1 != p2 && !mFsdb->isConnectedPair(p1, p2)) {
+                    rtCostMtx(p1, p2) = 1.0;
+                }
+            }
+        }
+
+        std::vector<unsigned> remapFpga = usedParts;
+        std::vector<bool> fpgaUsedMask(mNumFpgas, false);
+        for (unsigned p : remapFpga) fpgaUsedMask[p] = true;
+
+        bool remapped = true;
+        int remapIter = 0;
+        while (remapped && remapIter < 50) {
+            remapped = false;
+            remapIter++;
+            for (unsigned i = 0; i < numUsed; ++i) {
+                for (unsigned j = i + 1; j < numUsed; ++j) {
+                    unsigned p1 = remapFpga[i];
+                    unsigned p2 = remapFpga[j];
+                    // Check if p1 and p2 can accommodate each other's weights
+                    if (mFsdb->isCapViol(p2, getPartWeights(usedParts[i]), 1.0f) ||
+                        mFsdb->isCapViol(p1, getPartWeights(usedParts[j]), 1.0f)) {
+                        continue;
+                    }
+                    double delta = 0.0;
+                    for (unsigned k = 0; k < numUsed; ++k) {
+                        if (k == i || k == j) continue;
+                        unsigned pk = remapFpga[k];
+                        delta += finalConn(i, k) * (rtCostMtx(p2, pk) - rtCostMtx(p1, pk))
+                               + finalConn(j, k) * (rtCostMtx(p1, pk) - rtCostMtx(p2, pk));
+                    }
+                    if (delta < -1e-6) {
+                        std::swap(remapFpga[i], remapFpga[j]);
+                        remapped = true;
+                    }
+                }
+            }
+            for (unsigned i = 0; i < numUsed; ++i) {
+                unsigned p1 = remapFpga[i];
+                for (unsigned candP = 0; candP < mNumFpgas; ++candP) {
+                    if (fpgaUsedMask[candP] || mFsdb->getCell(candP).isUnused()) continue;
+                    if (mFsdb->isCapViol(candP, getPartWeights(usedParts[i]), 1.0f)) continue;
+                    double delta = 0.0;
+                    for (unsigned k = 0; k < numUsed; ++k) {
+                        if (k == i) continue;
+                        unsigned pk = remapFpga[k];
+                        delta += finalConn(i, k) * (rtCostMtx(candP, pk) - rtCostMtx(p1, pk));
+                    }
+                    if (delta < -1e-6) {
+                        fpgaUsedMask[p1] = false;
+                        fpgaUsedMask[candP] = true;
+                        remapFpga[i] = candP;
+                        p1 = candP;
+                        remapped = true;
+                    }
+                }
+            }
+        }
+
+        // Apply the remapped FPGA IDs
+        std::vector<unsigned> oldInstParts(mNumInsts);
+        for (unsigned u = 0; u < mNumInsts; ++u) {
+            oldInstParts[u] = getInstPart(u);
+        }
+        mFpgaNumInsts.assign(mNumFpgas, 0);
+        mAllocatedInsts.assign(mNumInsts, UINT_MAX);
+        mPartWeights.assign(mNumFpgas, std::make_tuple(0, 0, 0));
+        mFpgaInsts.assign(mNumFpgas, std::unordered_set<unsigned>());
+
+        for (unsigned u = 0; u < mNumInsts; ++u) {
+            unsigned oldP = oldInstParts[u];
+            if (oldP != UINT_MAX && partToCompact[oldP] >= 0) {
+                unsigned newP = remapFpga[partToCompact[oldP]];
+                const NLInst& nli = mNg->getInst(u);
+                const CellData& pW = getPartWeights(newP);
+                CellData cumCd = std::make_tuple(
+                    std::get<0>(pW) + nli.getLutWeight(),
+                    std::get<1>(pW) + nli.getBMemWeight(),
+                    std::get<2>(pW) + nli.getDMemWeight());
+                updateInstAllocation(u, newP);
+                addToPartWts(newP, cumCd);
+            }
+        }
+    }
 }
 
 void AnalyticalPartitioner::saveDBasMetisGraph()
