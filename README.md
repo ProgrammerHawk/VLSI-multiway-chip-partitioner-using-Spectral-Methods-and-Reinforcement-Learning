@@ -35,5 +35,9 @@ This will create an executable called "spectral_part".
 Note that "Eigen" directory must be at the same level as the partitioner files.  
 Otherwise adjust the path to the library in the compile shell script.  
 
+To RUN, execute: spectral_part blades.json igraph.json. 
+Try some of the examples under the examples directory.  
+
+
 
 
