@@ -1039,6 +1039,11 @@ class AnalyticalPartitioner
         void createSimMatricesAndClusters();
         void collectFpgaBridges();
         void initialPlacement();
+        void fmRefine(const std::vector<std::vector<std::pair<unsigned, double>>>& adj,
+                      const std::vector<unsigned>& parts);
+        void setAllocation(const InstToPartVec& partOf);
+        void placeFromClusters(const std::vector<std::vector<std::pair<unsigned, double>>>& adj);
+        double weightedCut(const std::vector<std::vector<std::pair<unsigned, double>>>& adj) const;
 
         const FpgaSystemDB* getFsdb() const
         {
@@ -1139,6 +1144,7 @@ class AnalyticalPartitioner
         FpgaProps   mFpgaProps; // isUnused, orig id, centroid
         InstProps   mInstProps; // isCentroid, no-fanin/no-fanout, isFixed, currPart
         ClusterId2Clust  mClusters; // Vector of clusters-vec - ordered by distance to centroid
+        std::vector<ClusterId2Clust> mClusterCands; // Alternative spectral clusterings tried by initialPlacement
         ClusterSetVec    mClusterSets; // set of instances for each cluster
         FpgaBridgeMtx    mFpgaBridges;
         ClusterCentroid2Insts   mClusterCentroidInstMap;
