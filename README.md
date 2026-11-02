@@ -15,7 +15,7 @@ __1. Coarsening Phase__
 __2. Initial Partitioning Phase (My Contribution)__    
 
 • __WHY:__ Create a baseline partition on the smallest, most condensed hypergraph.  
-• __HOW:__ Apply faster or more exhaustive localized optimization heuristics (such as randomized growth, greedy approaches, or breath-first search).  
+• __HOW:__ Apply faster spectral methods that naturally forms clusters of highly connected components in the euclidean space. Improve it with FM based refinement, RL methods etc. Must be comparable to random seed based partition. Direct k-way is required. Given a max "k", use optimal number of partitions less than "k" based on capacity constraints.    
 • __OUTPUT:__ A balanced, high-quality direct k-way on the coarsest graph, establishing a starting point with low routing cut sizes satisfying constraints. HAS TO BE DETERMINISTIC.  
 
 #  
