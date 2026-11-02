@@ -27,4 +27,10 @@ __3. Uncoarsening & Refinement Phase__
 • __OUTPUT:__ The fully optimized, multiway partitioned netlist matching the target hardware block or multi-chip constraints.  
 
 #  
+#  
+__COMPILE AND RUN__  
+
+To compile the basic version: Use basic_compile.sh. 
+This will create an executable called "spectral_solve". 
+
 
