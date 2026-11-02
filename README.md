@@ -31,11 +31,11 @@ __The USE MODEL__
 1. The partitioning use model is a FPGA based emulation system where a netlist (specified as a hypergraph in igraph.json) is to partitioned  
    "k" ways given a system with "N" FPGAs. The FPGAs are placed on boards and connected to each other. The boards are arranged on a rack and connected  
    to each other. The connectivity between each FPGA pair is limited and between each board is also limited.
-   Each FPGA also has a fixed capacity of LUTs, BMEMs, DMEMs, Flops etc. This is specified in the "blades.json" file.
+   Each FPGA also has a fixed capacity of LUTs, BMEMs, DMEMs etc. This is specified in the "blades.json" file.
 
 
    The problem statement is as follows:
-   1. The netlist is comprised of nodes and edges. Each node has different sub-nodes for LUTs, BMEMs, DMEMs, Flops with a size. Each edge has a weight
+   1. The netlist is comprised of nodes and edges. Each node has different sub-nodes for LUTs, BMEMs, DMEMs with a size. Each edge has a weight
       corresponding to some metric such as slack.
    2. The FPGA has a capacity constraint for each type of sub-node. The FPGA pairs also have bandwidth constraint.
    3. The unconnected FPGA pairs can be reached through other connected FPGAs and are called ROUTE-THROUGH nets.
