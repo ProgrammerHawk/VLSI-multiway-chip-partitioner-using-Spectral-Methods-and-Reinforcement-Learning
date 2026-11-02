@@ -31,6 +31,9 @@ __3. Uncoarsening & Refinement Phase__
 __COMPILE AND RUN__  
 
 To compile the basic version: Use basic_compile.sh. 
-This will create an executable called "spectral_solve". 
+This will create an executable called "spectral_part". 
+Note that "Eigen" directory must be at the same level as the partitioner files.  
+Otherwise adjust the path to the library in the compile shell script.  
+
 
 
