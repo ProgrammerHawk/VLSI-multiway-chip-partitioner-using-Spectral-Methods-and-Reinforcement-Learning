@@ -43,6 +43,10 @@ __The USE MODEL__
    5. Minimum number of FPGAs must be used for packing.
    
 #  
+<img width="3600" height="2520" alt="image" src="https://github.com/user-attachments/assets/bcc4c129-0c9e-4a01-aad5-6205e866cf2e" />  
+  
+#  
+
 __COMPILE AND RUN__  
 
 To compile the basic version: Use basic_compile.sh. 
